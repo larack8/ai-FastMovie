@@ -1,0 +1,147 @@
+services:
+  # MySQL 数据库
+  mysql:
+    image: mysql:8.0
+    container_name: fastmovie-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: fastmovie_root_2024
+      MYSQL_DATABASE: ai_short_play
+      MYSQL_USER: fastmovie
+      MYSQL_PASSWORD: fastmovie_2024
+      TZ: Asia/Shanghai
+    ports:
+      - "7015:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./fastmovie-admin/database.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    networks:
+      - fastmovie-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pfastmovie_root_2024"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: fastmovie-redis
+    restart: unless-stopped
+    ports:
+      - "7016:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - fastmovie-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PHP Webman 后端 (Admin API)
+  admin:
+    build:
+      context: ./fastmovie-admin
+      dockerfile: Dockerfile
+    container_name: fastmovie-admin
+    restart: unless-stopped
+    ports:
+      - "7013:7013"  # Push API
+      - "7014:7014"  # Push WSS
+    volumes:
+      - ./fastmovie-admin:/var/www/html
+      - admin_runtime:/var/www/html/runtime
+    environment:
+      - DEBUG=false
+      - SERVER_NAME=FastMovieAI
+      - SERVER_PORT=7012
+      - SERVER_ADMIN_PATH=admin
+      - DATABASE_HOST=mysql
+      - DATABASE_PORT=3306
+      - DATABASE_NAME=ai_short_play
+      - DATABASE_USERNAME=fastmovie
+      - DATABASE_PASSWORD=fastmovie_2024
+      - DATABASE_CHARSET=utf8mb4
+      - DATABASE_PREFIX=php_
+      - DATABASE_MAX_CONNECTIONS=20
+      - DATABASE_MIN_CONNECTIONS=5
+      - DATABASE_WAIT_TIMEOUT=3
+      - DATABASE_IDLE_TIMEOUT=60
+      - DATABASE_HEARTBEAT_INTERVAL=50
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - REDIS_DATABASE=4
+      - REDIS_MAX_CONNECTIONS=50
+      - REDIS_MIN_CONNECTIONS=10
+      - PUSH_KEY=fastmovie_push_key_2024_random
+      - PUSH_SCERET=fastmovie_push_secret_2024
+      - PUSH_API_PORT=7013
+      - PUSH_WSS_PORT=7014
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fastmovie-net
+    healthcheck:
+      test: ["CMD", "php", "-v"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Vue 前端 (Nginx)
+  frontend:
+    build:
+      context: ./fastmovie-vue
+      dockerfile: Dockerfile
+    container_name: fastmovie-frontend
+    restart: unless-stopped
+    ports:
+      - "7011:80"
+    depends_on:
+      - admin
+    networks:
+      - fastmovie-net
+
+  # Admin 代理 (Nginx) - 根路径重定向到 /admin/
+  admin-proxy:
+    image: nginx:alpine
+    container_name: fastmovie-admin-proxy
+    restart: unless-stopped
+    ports:
+      - "7012:80"
+    volumes:
+      - ./docker/nginx/admin-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - admin
+    networks:
+      - fastmovie-net
+
+  # API 网关 (Nginx)
+  gateway:
+    image: nginx:alpine
+    container_name: fastmovie-gateway
+    restart: unless-stopped
+    ports:
+      - "7010:80"
+    volumes:
+      - ./docker/nginx/gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - admin
+      - frontend
+    networks:
+      - fastmovie-net
+
+networks:
+  fastmovie-net:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  redis_data:
+  admin_runtime:
